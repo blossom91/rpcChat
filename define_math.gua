@@ -1,0 +1,57 @@
+const rpc = [
+    {
+        name: 'add',
+        returnValue: 'int',
+        arguments: [
+            {
+                name: 'data',
+                type: 'GuaString*',
+            }
+        ],
+        matcher: '+',
+    },
+    {
+        name: 'subtract',
+        returnValue: 'int',
+        arguments: [
+            {
+                name: 'data',
+                type: 'GuaString*',
+            }
+        ],
+        matcher: '-',
+    },
+    {
+        name: 'multiply',
+        returnValue: 'int',
+        arguments: [
+            {
+                name: 'data',
+                type: 'GuaString*',
+            }
+        ],
+        matcher: '*',
+    },
+    {
+        name: 'divide',
+        returnValue: 'int',
+        arguments: [
+            {
+                name: 'data',
+                type: 'GuaString*',
+            }
+        ],
+        matcher: '/',
+    },
+    {
+        name: 'decode',
+        returnValue: 'int',
+        arguments: [
+            {
+                name: 'data',
+                type: 'GuaString*',
+            }
+        ],
+        matcher: 'decode',
+    },
+]

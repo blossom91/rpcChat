@@ -1,0 +1,298 @@
+const fillTemplate = function(template, contents) {
+    var tem = template
+    for (i, e in contents) {
+        tem = tem.replace("%{{$"+i+"}}", e)
+    }
+    return tem
+}
+
+const createClientApiFunc = function(rpcList) {
+    var tem = ''
+    for (i, e in rpcList) {
+        var list = [e.returnValue, e.name]
+        for (j, arg in e.arguments) {
+            list.add(arg.type)
+            list.add(arg.name)
+        }
+        tem += fillTemplate(`
+        %{{$0}}
+        api_%{{$1}}(%{{$2}} %{{$3}}) {
+            GuaMessage *msg = GuaMessage_new(NULL);
+            int id = Set_Message_Sid(msg);
+            GuaArray *sp = GuaString_split(data, GuaString_new(" "));
+            char *m1 = GuaString_value(GuaArray_get(sp, 1));
+            char *m2 = GuaString_value(GuaArray_get(sp, 2));
+        `, list)
+        if (e.name == 'decode') {
+            tem += `
+                int mi2 = atoi(m2);
+                GuaArray *l = GuaArray_new();
+                GuaArray_add(l, GuaString_new(m1));
+            `
+        } else {
+            tem += `
+                int mi1 = atoi(m1);
+                int mi2 = atoi(m2);
+                GuaArray *l = GuaArray_new();
+                GuaArray_add(l, GuaNumber_newInt(mi1));
+            `
+        }
+        tem += fillTemplate(`
+            GuaArray_add(l, GuaNumber_newInt(mi2));
+            Set_Message_Payload(msg, l);
+            Set_Message_Type(msg, GuaMessageType_%{{$0}});
+            handleMsgList(GuaMessageList_add, msg);
+            int timeout = 5 * 1000;
+            struct timespec time10ms = {
+                .tv_sec = 0,
+                .tv_nsec = 10 * 1000 * 1000,
+            };
+            while (1) {
+                nanosleep(&time10ms, NULL);
+                timeout -= 10;
+                if (timeout <= 0) {
+                    return NULL;
+                }
+                if (responseMessage[id] != NULL) {
+                    return id;
+                }
+            }
+        }
+        `, [e.name])
+    }
+    return tem
+}
+
+const createClientHandle = function(rpcList) {
+    var template = `
+    int
+    handleRpcInput(GuaString *data) {
+        int id;
+        %{{$0}}
+    
+        GuaMessage *resMsg = responseMessage[id];
+        GuaArray *l = GuaMessage_payload(resMsg);
+        GuaLog(GuaArray_get(l, 0));
+        responseMessage[id] = NULL;
+        free(resMsg);
+        return 0;
+    }
+    `
+    var ifelse = ''
+    for (i, e in rpcList) {
+        if (i == 0) {
+            ifelse += fillTemplate(`if (GuaString_startsWith(data, GuaString_new("%{{$0}}"))) {
+                id = api_%{{$1}}(data);
+            }`, [e.matcher, e.name])
+        } else {
+            ifelse += fillTemplate(`else if (GuaString_startsWith(data, GuaString_new("%{{$0}}"))) {
+                id = api_%{{$1}}(data);
+            }`,[e.matcher, e.name])
+        }
+    }
+    ifelse += `
+    else {
+        return 1;
+    }`
+    template = fillTemplate(template, [ifelse])
+
+    return template
+}
+
+const createClientC = function(rpcList) {
+    var template = `
+        #include "lib/GuaBase.h"
+        #include "gm.h"
+        #include <unistd.h>
+        #include <stdlib.h>
+
+        extern GuaMessage *responseMessage[64 * 1024];
+
+        typedef enum {
+            %{{$0}}
+        };
+    `
+    var typeList = []
+    for (i, e in rpcList) {
+        if (i == 0) {
+            typeList.add('GuaMessageType_{} = 101,'.format(e.name))
+        } else {
+            typeList.add('GuaMessageType_{},'.format(e.name))
+        }
+    }
+    template = fillTemplate(template, [typeList.join('\n')])
+    template += createClientApiFunc(rpcList)
+    
+    template += createClientHandle(rpcList)
+
+    return template
+}
+
+const createClientH = function(rpcList) {
+    var tem = `
+    #ifndef GuaRPCClient_h
+    #define GuaRPCClient_h
+    
+    #include "lib/GuaBase.h"
+    %{{$0}}
+ 
+    
+    #endif /* GuaRPCClient_h */
+    `    
+    var funcs = ''
+    for (i, e in rpcList) {
+        var list = [e.returnValue, e.name]
+        for (j, arg in e.arguments) {
+            list.add(arg.type)
+            list.add(arg.name)
+        }
+        funcs += fillTemplate(`
+        %{{$0}}
+        api_%{{$1}}(%{{$2}} %{{$3}});
+        `, list)
+    }
+    funcs += `
+    int
+    handleRpcInput(GuaString *data);
+    `
+    tem = fillTemplate(tem, [funcs])
+    return tem
+}
+
+const createServerApiFunc = function(rpcList) {
+    var tem = ''
+    for (i, e in rpcList) {
+        if (e.name == 'decode') {
+            tem += fillTemplate(`
+            GuaArray *
+            api_function_%{{$0}}(GuaMessage *msg) {
+                char *res = GuaMessage_element(msg, 0);
+                int offset = GuaMessage_element(msg, 1);
+                char *d = res;
+                while (*d != '\\0')
+                {
+                    *d++ -= offset;
+                }
+                GuaArray *l = GuaArray_new();
+                GuaArray_add(l, GuaString_new(res));
+                return l;
+            }
+            `, [e.name])
+        } else {
+            tem += fillTemplate(`
+            GuaArray *
+            api_function_%{{$0}}(GuaMessage *msg) {
+                int mi1 = GuaMessage_element(msg, 0);
+                int mi2 = GuaMessage_element(msg, 1);
+                int res = mi1 %{{$1}} mi2;
+            
+                GuaArray *l = GuaArray_new();
+                GuaArray_add(l, GuaNumber_newInt(res));
+                return l;
+            }
+            `, [e.name, e.matcher])
+        }
+    }
+    return tem
+}
+
+const createServerHandle = function(rpcList) {
+    var template = `
+    GuaMessage *
+    handleRpcRead(GuaMessage *msg) {
+        GuaArray *l;
+        %{{$0}}
+    
+        GuaMessage *ackMsg = Chat_ACK_Msg(msg);
+        Set_Message_Payload(ackMsg, l);
+        return ackMsg;
+    }
+    `
+    var ifelse = ''
+    for (i, e in rpcList) {
+        if (i == 0) {
+            ifelse += fillTemplate(`if (GuaMessage_type(msg) == GuaMessageType_%{{$0}}) {
+                l = api_function_%{{$1}}(msg);
+            }`, [e.name, e.name])
+        } else {
+            ifelse += fillTemplate(`else if (GuaMessage_type(msg) == GuaMessageType_%{{$0}}) {
+                l = api_function_%{{$1}}(msg);
+            }`, [e.name, e.name])
+        }
+    }
+    ifelse += `
+    else {
+        return NULL;
+    }`
+    template = fillTemplate(template, [ifelse])
+
+    return template
+}
+
+const createServerC = function(rpcList) {
+    var template = `
+        #include "lib/GuaBase.h"
+        #include "gm.h"
+        #include <unistd.h>
+        #include <stdlib.h>
+
+        typedef enum {
+            %{{$0}}
+        };
+    `
+    var typeList = []
+    for (i, e in rpcList) {
+        if (i == 0) {
+            typeList.add('GuaMessageType_{} = 101,'.format(e.name))
+        } else {
+            typeList.add('GuaMessageType_{},'.format(e.name))
+        }
+    }
+    template = fillTemplate(template, [typeList.join('\n')])
+
+    template += createServerApiFunc(rpcList)
+
+    template += createServerHandle(rpcList)
+
+    return template
+}
+
+const createServerH = function(rpcList) {
+    var tem = `
+    #ifndef GuaRPCServer_h
+    #define GuaRPCServer_h
+    
+    #include "lib/GuaBase.h"
+
+    %{{$0}}
+    
+    #endif /* GuaRPCServer_h */
+    `    
+    var funcs = ''
+    for (i, e in rpcList) {
+        funcs += fillTemplate(`
+        GuaArray *
+        api_function_%{{$0}}(GuaMessage *msg);
+        `, [e.name])
+    }
+    funcs += `
+    GuaMessage *
+    handleRpcRead(GuaMessage *msg);
+    `
+    tem = fillTemplate(tem, [funcs])
+    return tem
+}
+
+const __main = function() {
+    const fileName = stringFromFile('math.crd').strip()
+    const rpcList = import(fileName).rpc
+    const clientContentC = createClientC(rpcList)
+    const clientContentH = createClientH(rpcList)
+    clientContentC.writeToFile('rpcClient.c')
+    clientContentH.writeToFile('rpcClient.h')
+
+    const serverContentC = createServerC(rpcList)
+    const serverContentH = createServerH(rpcList)
+    serverContentC.writeToFile('rpcServer.c')
+    serverContentH.writeToFile('rpcServer.h')
+}
